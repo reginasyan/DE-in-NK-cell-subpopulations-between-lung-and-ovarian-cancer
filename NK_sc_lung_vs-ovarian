@@ -109,13 +109,13 @@ ovarian <- subset(ovarian, subset = nFeature_RNA > 200 & nFeature_RNA < 7500 & p
 lung[["percent.mt"]] <- PercentageFeatureSet(lung, pattern = "^MT-")
 lung <- subset(lung, subset = nFeature_RNA > 200 & nFeature_RNA < 7500 & percent.mt < 20)
 
-# Add metadata ---------------------------
+# Add metadata -
 ovarian[["patient"]] <- barcode_table$Patient
 lung[["patient"]] <- lung_patients$PatientID
 ovarian$dataset <- 'ovarian'
 lung$dataset <- 'lung'
 
-# Integration ---------------------------
+# Integration 
 options(future.globals.maxSize = 3000 * 1024^2)  # Set to 3000 MiB
 
 lung_ovarian_combined <- merge(ovarian, lung, add.cell.ids = c("ovarian", "lung"))
@@ -130,6 +130,96 @@ lung_ovarian_combined <- FindNeighbors(lung_ovarian_combined, reduction = "integ
 lung_ovarian_combined <- FindClusters(lung_ovarian_combined, resolution = 2, cluster.name = "rpca_clusters")
 lung_ovarian_combined <- RunUMAP(lung_ovarian_combined, reduction = "integrated.rpca", dims = 1:30, reduction.name = "umap.rpca")
 
-# Dimensionality reduction and plotting ---------------------------
+# Dimensionality reduction and plotting 
 DimPlot(lung_ovarian_combined, reduction = "umap.rpca", group.by = "lung_ovarian_annotations", label = TRUE, label.size = 3) +
   theme(legend.position = "none")
+
+# Perform SingleR cell annotation 
+reference <- celldex::BlueprintEncodeData()
+reference_expression <- assay(reference, "logcounts")
+lung_ovarian_counts <- GetAssayData(lung_ovarian_combined, layer = "counts")
+
+main_labels <- reference@colData$label.main
+lung_ovarian_annotations <- SingleR(
+  test = lung_ovarian_counts, 
+  ref = reference_expression,
+  labels = main_labels
+)
+lung_ovarian_combined[['lung_ovarian_annotations']] <- lung_ovarian_annotations$labels
+hist(confidence_scores, breaks = 50, main = "Distribution of Confidence Scores", xlab = "Confidence Score")
+
+# Cluster analysis 
+nk_seurat <- subset(lung_ovarian_combined, lung_ovarian_annotations == "NK cells")
+DimPlot(lung_ovarian_combined, reduction = "umap.rpca", group.by = "rpca_clusters")
+DimPlot(nk_seurat, reduction = "umap.rpca", split.by = "dataset")
+
+# Gene expression analysis 
+marker_genes <- c("NCAM1", "FCGR3A", "KLRC1", "KLRK1", "NCR1", "NCR3", "NCR2", 
+                  "KIR2DL1", "GZMB", "PRF1", "NKG7", "CD3E")
+nk_expression <- FetchData(nk_seurat, vars = marker_genes)
+mean_expression <- colMeans(nk_expression)
+
+# Define min and max values for radar plot 
+max_value <- max(mean_expression)
+min_value <- 0
+radar_data <- rbind(max_value, min_value, mean_expression)
+rownames(radar_data) <- c("Max", "Min", "expression")
+
+# Plot the radar chart 
+radarchart(radar_data,
+           axistype = 1,
+           pcol = "orange",
+           pfcol = scales::alpha("orange", 0.3),
+           plwd = 2,
+           cglcol = "grey",
+           cglty = 1,
+           axislabcol = "grey",
+           vlcex = 0.8)
+title(main = "Gene Expression in NK Cells")
+
+# Pseudobulk DE analysis 
+pseudobulk <- AggregateExpression(lung_ovarian_combined, assays = "RNA", return.seurat = TRUE, group.by = c("patient", "lung_ovarian_annotations", "dataset"))
+pseudobulk$celltype.dataset <- paste(pseudobulk$lung_ovarian_annotations, pseudobulk$dataset, sep = "_")
+Idents(pseudobulk) <- "celltype.dataset"
+
+# Differential expression analysis 
+nk_subset <- subset(pseudobulk, idents = c("NK cells_ovarian", "NK cells_lung"))
+bulk.nk.de <- FindMarkers(nk_subset, ident.1 = "NK cells_ovarian", ident.2 = "NK cells_lung", test.use = "DESeq2")
+
+# Heatmap for top DE genes 
+bulk.nk.de.filtered <- bulk.nk.de %>%
+  filter(p_val_adj <= 0.05)
+top_genes <- head(bulk.nk.de.filtered[order(bulk.nk.de.filtered$avg_log2FC), ], 40)
+data_for_heatmap <- GetAssayData(bulk.nk.de.filtered, layer = "data")[rownames(top_genes), ]
+
+Heatmap(as.matrix(data_for_heatmap),
+        name = "expression",
+        column_title = "Expression of Top 40 DE Genes in NK cells",
+        row_names_side = "left",
+        cluster_rows = TRUE,
+        cluster_columns = TRUE)
+
+# Volcano plot ---------------------------
+volcano_plot <- ggplot(bulk.nk.de, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(color = p_val_adj <= 0.05), alpha = 0.4) +
+  scale_color_manual(values = c("grey", "red")) +
+  geom_text_repel(data = top_genes, aes(label = gene), size = 3,
+                  box.padding = 0.35, point.padding = 0.5,
+                  max.overlaps = 50) +
+  labs(x = "Average Log2 Fold Change", y = "-Log10 Adjusted P-value",
+       title = "Volcano Plot with Top 30 Genes Labeled") +
+  theme_minimal() +
+  theme(legend.position = "none")
+print(volcano_plot)
+
+# ClusterProfiler analysis ---------------------------
+genes_ovarian <- bulk.nk.de %>% filter(avg_log2FC > 0) %>% rownames()
+genes_lung <- bulk.nk.de %>% filter(avg_log2FC < 0) %>% rownames()
+
+entrez_ids_ovarian <- bitr(genes_ovarian, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+go_enrichment_ovarian <- enrichGO(gene = entrez_ids_ovarian$ENTREZID, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "MF", pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.05)
+dotplot(go_enrichment_ovarian, showCategory = 20) + ggtitle("GO Enrichment Analysis for Ovarian")
+
+entrez_ids_lung <- bitr(genes_lung, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+go_enrichment_lung <- enrichGO(gene = entrez_ids_lung$ENTREZID, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "MF", pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.05)
+dotplot(go_enrichment_lung, showCategory = 20) + ggtitle("GO Enrichment Analysis for Lung")
