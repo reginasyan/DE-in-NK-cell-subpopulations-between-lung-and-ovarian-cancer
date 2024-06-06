@@ -1,0 +1,44 @@
+# Install necessary packages
+
+install_if_missing <- function(packages) {
+  for (pkg in packages) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      install.packages(pkg)
+    }
+  }
+}
+
+bioc_install_if_missing <- function(packages) {
+  for (pkg in packages) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      BiocManager::install(pkg)
+    }
+  }
+}
+
+packages <- c("fmsb", "data.table", "tidyverse", "devtools", "Seurat", "Matrix", "BiocManager")
+bioc_packages <- c("glmGamPoi", "SingleR", "celldex", "clusterProfiler")
+
+install_if_missing(packages)
+bioc_install_if_missing(bioc_packages)
+
+# Load libraries
+
+library(data.table)
+library(tidyverse)
+library(fmsb)
+library(devtools)
+library(Seurat)
+library(BiocManager)
+library(Matrix)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(celldex)
+library(SingleR)
+library(patchwork)
+library(parallel)
+library(ComplexHeatmap)
+library(circlize)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
