@@ -1,19 +1,13 @@
 # Install necessary packages
 
 install_if_missing <- function(packages) {
-  for (pkg in packages) {
-    if (!requireNamespace(pkg, quietly = TRUE)) {
-      install.packages(pkg)
-    }
-  }
+  missing_packages <- packages[!sapply(packages, requireNamespace, quietly = TRUE)]
+  if (length(missing_packages) > 0) install.packages(missing_packages)
 }
 
 bioc_install_if_missing <- function(packages) {
-  for (pkg in packages) {
-    if (!requireNamespace(pkg, quietly = TRUE)) {
-      BiocManager::install(pkg)
-    }
-  }
+  missing_packages <- packages[!sapply(packages, requireNamespace, quietly = TRUE)]
+  if (length(missing_packages) > 0) BiocManager::install(missing_packages)
 }
 
 packages <- c("fmsb", "data.table", "tidyverse", "devtools", "Seurat", "Matrix", "BiocManager")
@@ -42,3 +36,100 @@ library(circlize)
 library(ggplot2)
 library(ggrepel)
 library(dplyr)
+
+# Load data 
+umi_matrix <- fread('Ovarian_Cancer_raw_UMI_matrix.csv', sep = '\t')
+barcode_table <- read_tsv('Ovarian_Cancer_cell_annotation.tsv')
+
+# Make a compatible UMI table 
+rownames(umi_matrix) <- umi_matrix$Gene_symbol
+
+# Find and exclude duplicates 
+barcode_duplicates <- barcode_table[duplicated(barcode_table$Index), ]$Index
+second_duplicates <- setdiff(colnames(umi_matrix), barcode_table$Index)
+duplicates <- union(barcode_duplicates, second_duplicates)
+
+umi_matrix <- umi_matrix[, !colnames(umi_matrix) %in% duplicates]
+barcode_table <- barcode_table[!barcode_table$Index %in% duplicates, ]
+
+# Exclude patients with early stages 
+umi_matrix$Index <- rownames(umi_matrix)
+umi_wp <- merge(barcode_table[, c(1, 2)], umi_matrix, by.x = 'Index')
+umi_wp <- umi_wp[umi_wp$Patient %in% c('ovCHA004', 'ovCHA034', 'ovCHA066', 'ovCHA070', 'ovCHA107', 'ovCHA110'), ]
+umi_fs <- t(as.matrix(umi_wp[, -2]))
+colnames(umi_fs) <- umi_fs[1, ]
+umi_data <- umi_fs[-1, ]
+
+# Cluster creation and converting matrix to numeric
+num_cores <- min(detectCores(), 8)
+cl <- makeCluster(num_cores)
+umi_data <- parApply(cl, umi_data, 2, as.numeric)
+stopCluster(cl)
+
+# Matrix sparsing 
+sparse_umi_matrix <- Matrix(umi_data, sparse = TRUE)
+rownames(sparse_umi_matrix) <- rownames(umi_data)
+colnames(sparse_umi_matrix) <- colnames(umi_data)
+
+barcode_table <- as.data.frame(barcode_table)
+rownames(barcode_table) <- barcode_table$Index
+barcode_table <- barcode_table[, -1]
+
+# Read lung cancer table 
+lung_patients <- fread('meta.csv')
+lung_patients <- lung_patients[lung_patients$PatientID %in% c('PS08', 'PS09', 'PA20', 'PA15', 'PA18', 'PA19'), ]
+rownames(lung_patients) <- lung_patients$Cells
+
+lung_barcodes <- c(lung_patients$Cells, "V1")
+sc_lung <- fread('raw_data.csv', select = lung_barcodes, sep = ',', quote = "\"")
+sc_lung_rownames <- sc_lung$V1
+sc_lung <- sc_lung[, -23185, with = FALSE]
+rownames(sc_lung) <- sc_lung_rownames
+
+sparse_sc_lung <- Matrix(as.matrix(sc_lung), sparse = TRUE)
+sparse_sc_lung <- t(sparse_sc_lung)
+
+# Exclude non gene symbol rows 
+classify_id <- function(id) grepl("^[A-Z0-9]+(-[A-Z0-9]+)*$", id)
+
+valid_ids_ovarian <- sapply(rownames(sparse_umi_matrix), classify_id)
+valid_ids_lung <- sapply(rownames(sparse_sc_lung), classify_id)
+
+ovarian_filtered <- sparse_umi_matrix[valid_ids_ovarian, , drop = FALSE]
+lung_filtered <- sparse_sc_lung[valid_ids_lung, , drop = FALSE]
+
+# Create Seurat objects 
+ovarian <- CreateSeuratObject(counts = ovarian_filtered, min.cells = 3, min.features = 200, project = 'ovarian')
+lung <- CreateSeuratObject(counts = lung_filtered, min.cells = 3, min.features = 200, project = 'lung')
+
+# Cutoff setting 
+ovarian[["percent.mt"]] <- PercentageFeatureSet(ovarian, pattern = "^MT-")
+ovarian <- subset(ovarian, subset = nFeature_RNA > 200 & nFeature_RNA < 7500 & percent.mt < 15)
+
+lung[["percent.mt"]] <- PercentageFeatureSet(lung, pattern = "^MT-")
+lung <- subset(lung, subset = nFeature_RNA > 200 & nFeature_RNA < 7500 & percent.mt < 20)
+
+# Add metadata ---------------------------
+ovarian[["patient"]] <- barcode_table$Patient
+lung[["patient"]] <- lung_patients$PatientID
+ovarian$dataset <- 'ovarian'
+lung$dataset <- 'lung'
+
+# Integration ---------------------------
+options(future.globals.maxSize = 3000 * 1024^2)  # Set to 3000 MiB
+
+lung_ovarian_combined <- merge(ovarian, lung, add.cell.ids = c("ovarian", "lung"))
+lung_ovarian_combined <- SCTransform(lung_ovarian_combined, vst.flavor = "v2", conserve.memory = TRUE)
+lung_ovarian_combined <- RunPCA(lung_ovarian_combined)
+lung_ovarian_combined <- IntegrateLayers(
+  object = lung_ovarian_combined, method = RPCAIntegration,
+  orig.reduction = "pca", new.reduction = "integrated.rpca", normalization.method = "SCT",
+  verbose = FALSE
+)
+lung_ovarian_combined <- FindNeighbors(lung_ovarian_combined, reduction = "integrated.rpca", dims = 1:30)
+lung_ovarian_combined <- FindClusters(lung_ovarian_combined, resolution = 2, cluster.name = "rpca_clusters")
+lung_ovarian_combined <- RunUMAP(lung_ovarian_combined, reduction = "integrated.rpca", dims = 1:30, reduction.name = "umap.rpca")
+
+# Dimensionality reduction and plotting ---------------------------
+DimPlot(lung_ovarian_combined, reduction = "umap.rpca", group.by = "lung_ovarian_annotations", label = TRUE, label.size = 3) +
+  theme(legend.position = "none")
