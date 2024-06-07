@@ -10,17 +10,7 @@ Two publicly available single-cell RNA sequencing datasets were used:
 
 ## Methodology
 
-1. **Data Download and Preprocessing**:
-   - The datasets were downloaded, cleaned, and preprocessed.
-   
-2. **Dimensionality Reduction and Clustering**:
-   - Performed using the `Seurat` package.
-   
-3. **Cell Annotation**:
-   - Conducted using the `SingleR` package.
-   
-4. **Differential Expression and Functional Enrichment Analyses**:
-   - Conducted to identify and interpret differences in gene expression signatures.
+The datasets were downloaded, cleaned, and preprocessed. Dimensionality reduction and clustering were performed using the `Seurat` package. Cell annotation was conducted using the `SingleR` package. Finally, differential expression and functional enrichment analyses were done to identify and interpret differences in gene expression signatures.
 
 ## Key Packages Used
 
