@@ -1,43 +1,9 @@
-# Install necessary packages
-
-install_if_missing <- function(packages) {
-  missing_packages <- packages[!sapply(packages, requireNamespace, quietly = TRUE)]
-  if (length(missing_packages) > 0) install.packages(missing_packages)
-}
-
-bioc_install_if_missing <- function(packages) {
-  missing_packages <- packages[!sapply(packages, requireNamespace, quietly = TRUE)]
-  if (length(missing_packages) > 0) BiocManager::install(missing_packages)
-}
-
-packages <- c("fmsb", "data.table", "tidyverse", "devtools", "Seurat", "Matrix", "BiocManager")
-bioc_packages <- c("glmGamPoi", "SingleR", "celldex", "clusterProfiler")
-
-install_if_missing(packages)
-bioc_install_if_missing(bioc_packages)
-
-# Load libraries
-
+# Load data
+install.packages("data.table")
 library(data.table)
+install.packages("tidyverse")
 library(tidyverse)
-library(fmsb)
-library(devtools)
-library(Seurat)
-library(BiocManager)
-library(Matrix)
-library(clusterProfiler)
-library(org.Hs.eg.db)
-library(celldex)
-library(SingleR)
-library(patchwork)
-library(parallel)
-library(ComplexHeatmap)
-library(circlize)
-library(ggplot2)
-library(ggrepel)
-library(dplyr)
-
-# Load data 
+ 
 umi_matrix <- fread('Ovarian_Cancer_raw_UMI_matrix.csv', sep = '\t')
 barcode_table <- read_tsv('Ovarian_Cancer_cell_annotation.tsv')
 
@@ -61,12 +27,16 @@ colnames(umi_fs) <- umi_fs[1, ]
 umi_data <- umi_fs[-1, ]
 
 # Cluster creation and converting matrix to numeric
+install.packages("parallel")
+library(parallel)
 num_cores <- min(detectCores(), 8)
 cl <- makeCluster(num_cores)
 umi_data <- parApply(cl, umi_data, 2, as.numeric)
 stopCluster(cl)
 
 # Matrix sparsing 
+install.packages("Matrix")
+library(Matrix)
 sparse_umi_matrix <- Matrix(umi_data, sparse = TRUE)
 rownames(sparse_umi_matrix) <- rownames(umi_data)
 colnames(sparse_umi_matrix) <- colnames(umi_data)
@@ -99,6 +69,8 @@ ovarian_filtered <- sparse_umi_matrix[valid_ids_ovarian, , drop = FALSE]
 lung_filtered <- sparse_sc_lung[valid_ids_lung, , drop = FALSE]
 
 # Create Seurat objects 
+install.packages("Seurat")
+library(Seurat)
 ovarian <- CreateSeuratObject(counts = ovarian_filtered, min.cells = 3, min.features = 200, project = 'ovarian')
 lung <- CreateSeuratObject(counts = lung_filtered, min.cells = 3, min.features = 200, project = 'lung')
 
@@ -135,6 +107,11 @@ DimPlot(lung_ovarian_combined, reduction = "umap.rpca", group.by = "lung_ovarian
   theme(legend.position = "none")
 
 # Perform SingleR cell annotation 
+BiocManager::install("SingleR")
+BiocManager::install("celldex")
+library(SingleR)
+library(celldex)
+
 reference <- celldex::BlueprintEncodeData()
 reference_expression <- assay(reference, "logcounts")
 lung_ovarian_counts <- GetAssayData(lung_ovarian_combined, layer = "counts")
@@ -154,6 +131,11 @@ DimPlot(lung_ovarian_combined, reduction = "umap.rpca", group.by = "rpca_cluster
 DimPlot(nk_seurat, reduction = "umap.rpca", split.by = "dataset")
 
 # Gene expression analysis 
+install.packages("dplyr")
+install.packages("fmsb")
+library(dplyr)
+library(fmsb)
+
 marker_genes <- c("NCAM1", "FCGR3A", "KLRC1", "KLRK1", "NCR1", "NCR3", "NCR2", 
                   "KIR2DL1", "GZMB", "PRF1", "NKG7", "CD3E")
 nk_expression <- FetchData(nk_seurat, vars = marker_genes)
@@ -178,6 +160,12 @@ radarchart(radar_data,
 title(main = "Gene Expression in NK Cells")
 
 # Pseudobulk DE analysis 
+install.packages("ComplexHeatmap")
+install.packages("ggplot2")
+install.packages("ggrepel")
+library(ComplexHeatmap)
+library(ggplot2)
+library(ggrepel)
 pseudobulk <- AggregateExpression(lung_ovarian_combined, assays = "RNA", return.seurat = TRUE, group.by = c("patient", "lung_ovarian_annotations", "dataset"))
 pseudobulk$celltype.dataset <- paste(pseudobulk$lung_ovarian_annotations, pseudobulk$dataset, sep = "_")
 Idents(pseudobulk) <- "celltype.dataset"
@@ -199,7 +187,7 @@ Heatmap(as.matrix(data_for_heatmap),
         cluster_rows = TRUE,
         cluster_columns = TRUE)
 
-# Volcano plot ---------------------------
+# Volcano plot 
 volcano_plot <- ggplot(bulk.nk.de, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
   geom_point(aes(color = p_val_adj <= 0.05), alpha = 0.4) +
   scale_color_manual(values = c("grey", "red")) +
@@ -212,7 +200,11 @@ volcano_plot <- ggplot(bulk.nk.de, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
   theme(legend.position = "none")
 print(volcano_plot)
 
-# ClusterProfiler analysis ---------------------------
+# ClusterProfiler analysis 
+BiocManager::install("clusterProfiler")
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
 genes_ovarian <- bulk.nk.de %>% filter(avg_log2FC > 0) %>% rownames()
 genes_lung <- bulk.nk.de %>% filter(avg_log2FC < 0) %>% rownames()
 
